@@ -1,6 +1,6 @@
 {
     "name": "si-gi/excel-reader",
-    "description": "Parsing and retrieving value from excel file",
+    "description": "Analyzing and extracting values ​​from an Excel file",
     "type": "library",
     "require-dev": {
         "phpunit/phpunit": "13.0.x-dev",
