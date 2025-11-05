@@ -1,0 +1,23 @@
+{
+    "name": "si-gi/excel-reader",
+    "description": "Parsing and retrieving value from excel file",
+    "type": "library",
+    "require-dev": {
+        "phpunit/phpunit": "13.0.x-dev",
+        "phpstan/phpstan": "2.1.x-dev"
+    },
+    "license": "GPL-2.0",
+    "autoload": {
+        "psr-4": {
+            "SiGi\\ExcelReader\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Simon Gilbert",
+            "email": "gilbert.simonj@gmail.com"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {}
+}
