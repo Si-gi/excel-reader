@@ -111,7 +111,7 @@ class Reader
         $reader->XML($xml);
 
         while ($reader->read()) {
-            if ($reader->nodeType === \XMLReader::ELEMENT && $reader->name === 't') {
+            if ($reader->nodeType === \XMLReader::ELEMENT && str_contains($reader->name, 't')) {
                 $this->sharedStrings[] = $reader->readString();
             }
         }
@@ -135,7 +135,7 @@ class Reader
         $sheetIndex = 0;
 
         while ($reader->read()) {
-            if ($reader->nodeType === \XMLReader::ELEMENT && $reader->name === 'sheet') {
+            if ($reader->nodeType === \XMLReader::ELEMENT && str_contains($reader->name,'sheet')) {
                 $sheetName = $reader->getAttribute('name');
                 $xmlPath = $this->getSheetXmlPath($sheetIndex);
 
