@@ -2,129 +2,26 @@
 
 declare(strict_types=1);
 
-namespace Sigi\ExcelReader\Reader;
+namespace Sigi\ExcelReader\Loader;
 
-use ZipArchive;
 use Sigi\ExcelReader\Objects\Sheet;
 use Sigi\ExcelReader\Objects\SheetCollection;
-use Sigi\ExcelReader\Exception\FileNotFoundException;
-use Sigi\ExcelReader\Exception\FileNotReadableException;
 
-class Reader
+class SheetLoader extends AbstractLoader implements LoaderInterface
 {
-    private array $tempFiles = [];
-    private ?ZipArchive $zip = null;
-    private ?string $filePath = null;
-    private ?SheetCollection $sheets = null;
-    private ?SharedStringsReader $sharedStringsReader = null;
-    private array $sharedStrings = [];
 
-    public function getTempFiles(): array
+    public function __construct()
     {
-        return $this->tempFiles;
+        parent::__construct();
     }
-    public function open(string $file): int|bool
+    public function load(string $fromName): static
     {
-        if (!file_exists($file)) {
-            throw new FileNotFoundException("File not found: {$file}");
-        }
-
-        $this->filePath = $file;
-        $this->zip = new ZipArchive();
-        $stream = $this->zip->open($file);
-        if ($stream !== true) {
-            throw new \RuntimeException("Could not open ZIP archive: {$file}");
-        }
-
-        return $stream;
-    }
-
-    public function getSharedStringsReader(): SharedStringsReader
-    {
-        if ($this->sharedStringsReader === null) {
-            throw new \RuntimeException("No file opened.");
-        }
-
-        return $this->sharedStringsReader;
-    }
-
-    public function close(): void
-    {
-        if ($this->zip !== null) {
-            $this->zip->close();
-            $this->zip = null;
-        }
-
-        $this->sheets = null;
-        $this->sharedStrings = [];
-        $this->sharedStringsReader = null;
-        foreach ($this->tempFiles as $tempFile) {
-            if (file_exists($tempFile)) {
-                @unlink($tempFile);
-            }
-        }
-
-        $this->tempFiles = [];
-    }
-
-    public function getSheets(): SheetCollection
-    {
-        if ($this->sheets === null) {
-            throw new \RuntimeException("No file opened. Call open() first.");
-        }
-
-        return $this->sheets;
-    }
-
-    public function getSharedStrings(): array
-    {
-        return $this->sharedStrings;
-    }
-
-    public function getZip(): ZipArchive
-    {
-        if ($this->zip === null) {
-            throw new \RuntimeException("No file opened.");
-        }
-
-        return $this->zip;
-    }
-
-    public function getFilePath(): string
-    {
-        return $this->filePath;
-    }
-
-    private function loadSharedStrings(): void
-    {
-        $xml = $this->zip->getFromName('xl/sharedStrings.xml');
-
-        if ($xml === false) {
-            return;
-        }
-
-        $reader = new \XMLReader();
-        $reader->XML($xml);
-
-        while ($reader->read()) {
-            if ($reader->nodeType === \XMLReader::ELEMENT && str_contains($reader->name, 't')) {
-                $this->sharedStrings[] = $reader->readString();
-            }
-        }
-
-        $reader->close();
-    }
-
-    private function loadSheets(): void
-    {
-        $this->sheets = new SheetCollection();
-
-        $workbookXml = $this->zip->getFromName('xl/workbook.xml');
+        $sheetCollection = new SheetCollection();
+        $workbookXml = $this->zip->getFromName($fromName);
 
         if ($workbookXml === false) {
             throw new \RuntimeException("Could not read workbook.xml");
         }
-
         $reader = new \XMLReader();
         $reader->XML($workbookXml);
 
@@ -136,7 +33,7 @@ class Reader
                 (strtolower($reader->localName) === 'sheet' || str_contains(strtolower($reader->name), 'sheet'))) {
                 
                 $sheetName = $reader->getAttribute('name');
-                $rId = $reader->getAttribute('r:id');
+                $rId = $reader->getAttribute('r:id'); // TODO : maange by excel file
 
                 // Essayer différentes façons d'obtenir le r:id
                 if (empty($rId)) {
@@ -163,17 +60,17 @@ class Reader
                     xmlPath: $xmlPath
                 );
 
-                $this->sheets->add($sheet);
+                $sheetCollection->add($sheet);
                 $sheetIndex++;
             }
         }
 
         $reader->close();
+        return $this;
     }
 
-
     /**
-     * Lit le fichier workbook.xml.rels pour obtenir les relations
+     * Read the workbook.xml.rels to get relations
      */
     private function getSheetRelations(): array
     {
@@ -219,11 +116,11 @@ class Reader
     }
 
     /**
-     * Trouve le fichier XML d'une sheet par son index (fallback)
+     * Find XML file of sheet by index (fallback)
      */
     private function findSheetXmlByIndex(int $index): ?string
     {
-        // Liste de tous les chemins possibles
+        // TODO: manage sheets paths
         $possiblePaths = [
             "xl/worksheets/sheet" . ($index + 1) . ".xml",
             "worksheets/sheet" . ($index + 1) . ".xml",
@@ -273,22 +170,5 @@ class Reader
         });
 
         return $worksheets;
-    }
-
-    public function extractSheet(string $xmlPath): string
-    {
-        if (isset($this->tempFiles[$xmlPath])) {
-            return $this->tempFiles[$xmlPath];
-        }
-
-        $tempFile = sys_get_temp_dir() . '/excel_' . md5($xmlPath) . '.xml';
-        $source = "zip://{$this->filePath}#{$xmlPath}";
-
-        if (!copy($source, $tempFile)) {
-            throw new \RuntimeException("Could not extract $xmlPath");
-        }
-
-        $this->tempFiles[$xmlPath] = $tempFile;
-        return $tempFile;
     }
 }

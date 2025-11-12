@@ -12,6 +12,7 @@ use ArrayIterator;
 class SheetCollection implements ArrayAccess, Countable, IteratorAggregate
 {
     private array $sheets = [];
+    // private SharedString $sharedString;
 
     public function __construct(array $sheets = [])
     {
