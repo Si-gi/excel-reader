@@ -5,80 +5,165 @@ declare(strict_types=1);
 namespace Sigi\ExcelReader\Loader;
 
 use Sigi\ExcelReader\Objects\Sheet;
+use Sigi\ExcelReader\Loader\AbstractLoader;
 use Sigi\ExcelReader\Objects\SheetCollection;
+use Sigi\ExcelReader\Reader\SharedStringsReader;
 
-class SheetLoader extends AbstractLoader implements LoaderInterface
-{
+class SheetLoader extends AbstractLoader {
 
-    public function __construct()
+    private ?SheetCollection $sheets = null;
+    private ?SharedStringsReader $sharedStringsReader = null;
+
+    public function setSharedStringsReader(SharedStringsReader $reader): self
     {
-        parent::__construct();
+        $this->sharedStringsReader = $reader;
+        return $this;
     }
-    public function load(string $fromName): static
-    {
-        $sheetCollection = new SheetCollection();
-        $workbookXml = $this->zip->getFromName($fromName);
 
-        if ($workbookXml === false) {
-            throw new \RuntimeException("Could not read workbook.xml");
+    public function load(string $fromName = ''): static
+    {
+        if ($this->loaded) {
+            return $this;
         }
+
+        // Utiliser le chemin détecté par la structure
+        $workbookPath = $fromName ?: $this->structure->workbookPath;
+
+        $this->sheets = new SheetCollection();
+        $workbookXml = $this->getXmlContent($workbookPath);
+
         $reader = new \XMLReader();
         $reader->XML($workbookXml);
 
         $sheetIndex = 0;
-        $sheetRelations = $this->getSheetRelations();
+        $relations = $this->loadRelations();
 
         while ($reader->read()) {
-            if ($reader->nodeType === \XMLReader::ELEMENT && 
-                (strtolower($reader->localName) === 'sheet' || str_contains(strtolower($reader->name), 'sheet'))) {
-                
+            if ($this->isSheetElement($reader)) {
                 $sheetName = $reader->getAttribute('name');
-                $rId = $reader->getAttribute('r:id'); // TODO : maange by excel file
+                $rId = $this->extractRelationId($reader);
 
-                // Essayer différentes façons d'obtenir le r:id
-                if (empty($rId)) {
-                    $rId = $reader->getAttributeNs('id', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
-                }
-
-                // Trouver le chemin XML via les relations ou par index
-                $xmlPath = null;
-                
-                if (!empty($rId) && isset($sheetRelations[$rId])) {
-                    $xmlPath = $sheetRelations[$rId];
-                } else {
-                    $xmlPath = $this->findSheetXmlByIndex($sheetIndex);
-                }
+                $xmlPath = $this->resolveSheetPath($rId, $sheetIndex, $relations);
 
                 if ($xmlPath === null) {
-                    throw new \RuntimeException("Could not find XML path for sheet '{$sheetName}' (index: {$sheetIndex})");
+                    throw new \RuntimeException("Could not find XML for sheet '{$sheetName}'");
                 }
 
                 $sheet = new Sheet(
-                    reader: $this,
+                    zip: $this->zip,
+                    structure: $this->structure,
+                    sharedStringsReader: $this->sharedStringsReader,
                     name: $sheetName,
                     index: $sheetIndex,
                     xmlPath: $xmlPath
                 );
 
-                $sheetCollection->add($sheet);
+                $this->sheets->add($sheet);
                 $sheetIndex++;
             }
         }
 
         $reader->close();
+        $this->loaded = true;
+
         return $this;
     }
 
+    public function getSheets(): SheetCollection
+    {
+        if (!$this->loaded) {
+            throw new \RuntimeException("Sheets not loaded. Call load() first.");
+        }
+
+        return $this->sheets;
+    }
+
     /**
-     * Read the workbook.xml.rels to get relations
+     * Vérifie si l'élément XML est une sheet (utilise la structure détectée)
      */
-    private function getSheetRelations(): array
+    private function isSheetElement(\XMLReader $reader): bool
+    {
+        if ($reader->nodeType !== \XMLReader::ELEMENT) {
+            return false;
+        }
+
+        // Utiliser le nom d'élément détecté par la structure
+        $expectedName = strtolower($this->structure->sheetElementName);
+        $currentName = strtolower($reader->name);
+        $localName = strtolower($reader->localName);
+
+        return $localName === 'sheet' || 
+               $currentName === $expectedName || 
+               str_ends_with($currentName, ':sheet');
+    }
+
+    /**
+     * Extrait l'ID de relation (utilise la structure détectée)
+     */
+    private function extractRelationId(\XMLReader $reader): ?string
+    {
+        // Essayer l'attribut détecté par la structure
+        $rId = $reader->getAttribute($this->structure->relationshipIdAttribute);
+
+        if (!empty($rId)) {
+            return $rId;
+        }
+
+        // Fallback : essayer sans namespace
+        $rId = $reader->getAttribute('id');
+
+        if (!empty($rId)) {
+            return $rId;
+        }
+
+        // Dernier recours : chercher n'importe quel attribut contenant "id"
+        if ($reader->hasAttributes) {
+            while ($reader->moveToNextAttribute()) {
+                if (str_contains(strtolower($reader->name), 'id') && 
+                    str_starts_with($reader->value, 'rId')) {
+                    $value = $reader->value;
+                    $reader->moveToElement();
+                    return $value;
+                }
+            }
+            $reader->moveToElement();
+        }
+
+        return null;
+    }
+
+    /**
+     * Résout le chemin XML d'une sheet
+     */
+    private function resolveSheetPath(?string $rId, int $index, array $relations): ?string
+    {
+        var_dump($rId);
+        var_dump($index);
+        var_dump($relations);
+
+        // 1. Essayer via les relations
+        if (!empty($rId) && isset($relations[$rId])) {
+            return $relations[$rId];
+        }
+
+        // 2. Essayer via la structure détectée
+        return $this->structure->getWorksheetPath($index);
+    }
+
+    /**
+     * Charge les relations workbook -> worksheets
+     */
+    private function loadRelations(): array
     {
         $relations = [];
 
-        $relsXml = $this->zip->getFromName('xl/_rels/workbook.xml.rels');
+        if (empty($this->structure->relationsPath)) {
+            return $relations;
+        }
 
-        if ($relsXml === false) {
+        try {
+            $relsXml = $this->getXmlContent($this->structure->relationsPath);
+        } catch (\RuntimeException $e) {
             return $relations;
         }
 
@@ -87,24 +172,16 @@ class SheetLoader extends AbstractLoader implements LoaderInterface
 
         while ($reader->read()) {
             if ($reader->nodeType === \XMLReader::ELEMENT && 
-                (strtolower($reader->localName) === 'relationship' || strtolower($reader->name) === 'relationship')) {
+                strtolower($reader->localName) === 'relationship') {
                 
                 $id = $reader->getAttribute('Id');
                 $target = $reader->getAttribute('Target');
                 $type = $reader->getAttribute('Type');
 
-                // Vérifier que c'est bien une relation vers une worksheet
                 if (!empty($id) && !empty($target) && 
-                    (str_contains($type, 'worksheet') || str_contains($target, 'worksheet'))) {
+                    (str_contains($type, 'worksheet') || str_contains($target, 'sheet'))) {
                     
-                    // Normaliser le chemin (enlever ../ si présent)
-                    $normalizedTarget = str_replace('../', '', $target);
-                    
-                    // Ajouter xl/ si ce n'est pas déjà là
-                    if (!str_starts_with($normalizedTarget, 'xl/')) {
-                        $normalizedTarget = 'xl/' . $normalizedTarget;
-                    }
-
+                    $normalizedTarget = $this->normalizeTargetPath($target);
                     $relations[$id] = $normalizedTarget;
                 }
             }
@@ -116,59 +193,19 @@ class SheetLoader extends AbstractLoader implements LoaderInterface
     }
 
     /**
-     * Find XML file of sheet by index (fallback)
+     * Normalise un chemin de target
      */
-    private function findSheetXmlByIndex(int $index): ?string
+    private function normalizeTargetPath(string $target): string
     {
-        // TODO: manage sheets paths
-        $possiblePaths = [
-            "xl/worksheets/sheet" . ($index + 1) . ".xml",
-            "worksheets/sheet" . ($index + 1) . ".xml",
-        ];
-
-        // Chercher le premier qui existe
-        foreach ($possiblePaths as $path) {
-            if ($this->zip->locateName($path) !== false) {
-                return $path;
-            }
+        // Retirer les ../ relatifs
+        $normalized = str_replace('../', '', $target);
+        
+        // Ajouter xl/ si nécessaire
+        if (!str_starts_with($normalized, 'xl/') && 
+            !str_starts_with($normalized, 'worksheets/')) {
+            $normalized = 'xl/' . $normalized;
         }
 
-        // Si rien trouvé, lister tous les fichiers worksheet disponibles
-        $worksheets = $this->listWorksheetFiles();
-
-        if (isset($worksheets[$index])) {
-            return $worksheets[$index];
-        }
-
-        return null;
-    }
-
-    /**
-     * Liste tous les fichiers worksheet dans le ZIP
-     */
-    private function listWorksheetFiles(): array
-    {
-        $worksheets = [];
-
-        for ($i = 0; $i < $this->zip->numFiles; $i++) {
-            $filename = $this->zip->getNameIndex($i);
-            
-            if (preg_match('/worksheets\/sheet\d+\.xml$/', $filename)) {
-                $worksheets[] = $filename;
-            }
-        }
-
-        // Trier par numéro de sheet
-        usort($worksheets, function($a, $b) {
-            preg_match('/sheet(\d+)\.xml$/', $a, $matchA);
-            preg_match('/sheet(\d+)\.xml$/', $b, $matchB);
-            
-            $numA = isset($matchA[1]) ? (int)$matchA[1] : 0;
-            $numB = isset($matchB[1]) ? (int)$matchB[1] : 0;
-            
-            return $numA - $numB;
-        });
-
-        return $worksheets;
+        return $normalized;
     }
 }
